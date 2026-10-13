@@ -20,6 +20,10 @@ Personlig budgetapp: månadsbudget per kategori, daglig balans, sparmål, CSV-im
 
 Ladda upp de ändrade filerna till samma repo. Öka sedan `VERSION` i `sw.js` (t.ex. `budget-v1.0.1`) så hämtar telefonen den nya versionen nästa gång appen öppnas med internet. Din data påverkas inte.
 
+## Planera månaden (v1.2)
+
+Under **Budget › Plan** fyller du i inkomst och lönedag, fasta utgifter (förslag är ifyllda – ta bort med ×), sparande per sparmål och rörliga utgifter. Appen visar vad som blir **ofördelat** och låter dig fördela resten med ett tryck. **Utfall** visar hur det faktiskt går, inklusive vilka räkningar som dragits.
+
 ## Månatlig påminnelse
 
 Under **Inställningar › Månatlig påminnelse** väljer du dag och trycker **Lägg till i kalendern**. Då öppnas en kalenderfil (`paminnelse-XX.ics`) och iPhone frågar om du vill lägga till händelsen – välj *Lägg till alla*. Påminnelsen upprepas varje månad kl. 18.00 och ändras eller tas bort i Kalender-appen. Kalenderfilerna ska ligga i samma mapp som `index.html`.

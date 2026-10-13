@@ -1,6 +1,6 @@
 // Service worker: gör att appen fungerar utan internet.
 // Höj VERSION när du laddar upp nya filer, så hämtar telefonen den nya versionen.
-const VERSION = 'budget-v1.1.1';
+const VERSION = 'budget-v1.2.0';
 const FILES = [
   './',
   './index.html',

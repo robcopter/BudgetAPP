@@ -274,3 +274,28 @@ button.setting:last-child { border-bottom: none; }
   font-size: 14px; font-weight: 500; transition: opacity .2s, transform .2s; max-width: calc(100vw - 48px);
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- Planering (v1.2) ---------- */
+a.hero { text-decoration: none; color: var(--on-hero); }
+.hero-link { align-self: stretch; display: flex; justify-content: space-between; align-items: center; }
+.hero-link .go { display: flex; align-items: center; gap: 2px; font-size: 13px; color: var(--hero-soft); }
+.plain-input {
+  border: none; background: transparent; padding: 2px 0; font-size: 15px; font-weight: 500; color: var(--ink);
+  width: 100%; min-width: 0; outline: none; border-radius: 6px;
+}
+.plain-input:focus { box-shadow: 0 2px 0 var(--ink); border-radius: 0; }
+.amount-field {
+  width: 92px; height: 40px; flex-shrink: 0; border-radius: 12px; border: 1px solid var(--line);
+  background: var(--card); padding: 0 12px; text-align: right; outline: none;
+  font-family: 'Geist Mono', monospace; font-size: 14px; color: var(--ink);
+}
+.sheet .amount-field { background: var(--bg); }
+:root[data-theme="light"] .sheet .amount-field { background: #FFFFFF; }
+.amount-field.empty { border-style: dashed; background: transparent !important; }
+.amount-field:focus { border-color: var(--ink); border-style: solid; }
+.x-btn {
+  width: 40px; height: 40px; flex-shrink: 0; border-radius: 12px; border: none; background: transparent;
+  color: var(--muted); display: flex; align-items: center; justify-content: center; margin-right: -8px;
+}
+.chip.dashed { height: 38px; border-style: dashed; background: transparent !important; font-weight: 500; }
+.sheet .list .row { border-bottom-color: var(--divider); }

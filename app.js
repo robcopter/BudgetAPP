@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.2.0';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -33,16 +33,32 @@
   // ================================================================
   // Data
   // ================================================================
+  // Rörliga utgifter (budget per kategori)
   const DEFAULT_CATS = [
-    ['Mat & dryck', 4500], ['Boende', 8000], ['Nöje', 1200], ['Transport', 900],
-    ['Hälsa & träning', 600], ['Kläder', 800], ['Övrigt', 500]
+    ['Mat & dryck', 4500], ['Restaurang & café', 1200], ['Transport', 900], ['Nöje', 1200],
+    ['Kläder', 800], ['Hälsa & träning', 600], ['Övrigt', 1400]
   ];
+  // Förslag på fasta utgifter, med nyckelord för att känna igen dem i importer
+  const FIXED_SUGGESTIONS = [
+    ['Hyra', ['hyra', 'bostadsrätt', 'avgift brf', 'brf ']],
+    ['El', ['vattenfall', 'ellevio', 'tibber', 'e.on', ' eon', 'fortum', 'göteborg energi', 'greenely', 'elavtal']],
+    ['Hemförsäkring', ['hemförsäkring', 'folksam', 'länsförsäkringar', 'trygg-hansa', 'if skade', 'if försäkring', 'gjensidige', 'hedvig']],
+    ['Mobil', ['telia', 'tele2', 'comviq', 'telenor', ' tre ', 'hallon', 'vimla', 'fello']],
+    ['Bredband', ['bahnhof', 'bredband', 'ownit', 'com hem', 'comhem', 'bredbandsbolaget']],
+    ['Streaming', ['spotify', 'netflix', 'hbo', 'viaplay', 'disney', 'youtube premium', 'apple.com/bill', 'storytel', 'max.com']],
+    ['Gym', ['sats', 'friskis', 'nordic wellness', 'actic', 'fitness24', 'gym']],
+    ['A-kassa & fack', ['a-kassa', 'akassa', 'unionen', 'kommunal', 'vision', 'fackförbund', 'ledarna', 'saco']],
+    ['CSN', ['csn']]
+  ];
+  const MORE_FIXED = ['Bil & parkering', 'Lån', 'Barnomsorg', 'Livförsäkring', 'Molntjänst', 'Tidning'];
+  const MORE_VARIABLE = ['Restaurang & café', 'Hem & inredning', 'Presenter', 'Husdjur', 'Resor', 'Hobby', 'Barn', 'Skönhet', 'Övrigt'];
   const INCOME_CATS = ['Lön', 'Swish', 'Återbetalning', 'Övrig inkomst'];
 
   function defaults() {
     return {
-      v: 1,
+      v: 2,
       settings: { theme: 'auto', monthStart: 1, mainGoalId: null, rules: {} },
+      plan: { income: [], fixedSetup: false },
       categories: [
         ...DEFAULT_CATS.map(([name, budget]) => ({ id: uid(), name, budget, kind: 'expense' })),
         ...INCOME_CATS.map((name) => ({ id: uid(), name, budget: 0, kind: 'income' }))
@@ -63,6 +79,9 @@
     db.categories = Array.isArray(db.categories) ? db.categories : d.categories;
     db.transactions = Array.isArray(db.transactions) ? db.transactions : [];
     db.goals = Array.isArray(db.goals) ? db.goals : [];
+    // Version 2: planering (inkomst, fasta utgifter, sparande per mål)
+    db.plan = Object.assign({ income: [], fixedSetup: false }, db.plan || {});
+    db.v = 2;
   }
   function save() {
     try { localStorage.setItem(KEY, JSON.stringify(db)); }
@@ -70,7 +89,16 @@
   }
 
   const cat = (id) => db.categories.find((c) => c.id === id);
-  const expenseCats = () => db.categories.filter((c) => c.kind === 'expense');
+  const expenseCats = () => db.categories.filter((c) => c.kind === 'expense'); // rörliga
+  const fixedCats = () => db.categories.filter((c) => c.kind === 'fixed');
+  const isOut = (c) => c && c.kind !== 'income'; // utgift (fast eller rörlig)
+  function catOptionsHtml(income, selected, emptyLabel) {
+    const o = (c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`;
+    if (income) return `<option value="">${emptyLabel}</option>` + incomeCats().map(o).join('');
+    const fx = fixedCats();
+    return `<option value="">${emptyLabel}</option>` +
+      (fx.length ? `<optgroup label="Rörliga">${expenseCats().map(o).join('')}</optgroup><optgroup label="Fasta">${fx.map(o).join('')}</optgroup>` : expenseCats().map(o).join(''));
+  }
   const incomeCats = () => db.categories.filter((c) => c.kind === 'income');
   const shortName = (name) => name.replace(/[^A-Za-zÅÄÖåäöÉé]/g, '').slice(0, 2).toUpperCase() || '•';
   const txHash = (t) => t.date + '|' + String(t.text).trim().toLowerCase() + '|' + Number(t.amount).toFixed(2);
@@ -99,17 +127,18 @@
   function stats(p) {
     const tx = db.transactions.filter((t) => inPeriod(t.date, p));
     const spentBy = {};
-    let spent = 0, uncategorized = 0;
+    let spent = 0, uncategorized = 0, fixedSpent = 0;
     for (const t of tx) {
       if (t.amount >= 0) continue;
       const c = cat(t.catId);
       if (c && c.kind === 'income') continue;
+      if (c && c.kind === 'fixed') { spentBy[c.id] = (spentBy[c.id] || 0) - t.amount; fixedSpent += -t.amount; continue; }
       spent += -t.amount;
       if (c) spentBy[c.id] = (spentBy[c.id] || 0) - t.amount;
       else uncategorized += -t.amount;
     }
     const budget = expenseCats().reduce((s, c) => s + (Number(c.budget) || 0), 0);
-    return { tx, spentBy, spent, uncategorized, budget };
+    return { tx, spentBy, spent, uncategorized, budget, fixedSpent };
   }
 
   function daily() {
@@ -120,7 +149,7 @@
     for (const t of st.tx) {
       if (t.amount >= 0) continue;
       const c = cat(t.catId);
-      if (c && c.kind === 'income') continue;
+      if (c && c.kind !== 'expense') continue; // inkomster och fasta räkningar räknas inte mot dagsbudgeten
       if (t.date < today) before += -t.amount; else if (t.date === today) todaySpent += -t.amount;
     }
     const daysLeft = daysBetween(today, p.end) + 1;
@@ -164,7 +193,7 @@
     const rule = db.settings.rules[normText(text)];
     if (rule && cat(rule)) {
       const c = cat(rule);
-      if ((amount < 0) === (c.kind === 'expense')) return c.id;
+      if ((amount < 0) === isOut(c)) return c.id;
     }
     const t = ' ' + String(text).toLowerCase() + ' ';
     const byName = (n) => (db.categories.find((c) => c.name === n) || {}).id || null;
@@ -172,6 +201,10 @@
       if (/\blön\b|\blon\b|salary/.test(t)) return byName('Lön');
       if (/swish/.test(t)) return byName('Swish');
       return null;
+    }
+    for (const [name, words] of FIXED_SUGGESTIONS) {
+      const c = db.categories.find((x) => x.kind === 'fixed' && x.name === name);
+      if (c && words.some((w) => t.includes(w))) return c.id;
     }
     for (const [name, words] of Object.entries(KEYWORDS)) {
       if (words.some((w) => t.includes(w))) return byName(name);
@@ -361,8 +394,8 @@
         </div>
       </div>
 
-      <section class="hero" aria-label="Daglig balans" style="align-items:center;gap:4px">
-        <span class="overline" style="align-self:flex-start">Kvar att spendera idag</span>
+      <a class="hero" href="#/budget" aria-label="Kvar att spendera idag ${esc(kr(d.left))}. Visa budget" style="align-items:center;gap:4px">
+        <span class="hero-link"><span class="overline">Kvar att spendera idag</span><span class="go" aria-hidden="true">Budget ${svg('<path d="M9 5 L16 12 L9 19"/>', 14, 2.2)}</span></span>
         <div class="gauge">
           <svg role="img" aria-label="${Math.round(pct * 100)} procent av dagsbudgeten kvar" width="240" height="132" viewBox="0 0 240 132" fill="none">
             <path d="M20 120 A100 100 0 0 1 220 120" stroke="var(--hero-track)" stroke-width="16" stroke-linecap="round"/>
@@ -377,7 +410,7 @@
           <span>Dagsbudget ${kr(d.allowance)}</span>
           <span>${d.daysLeft} ${d.daysLeft === 1 ? 'dag' : 'dagar'} kvar</span>
         </div>
-      </section>
+      </a>
 
       <div class="grid2">
         <div class="card"><span class="label">Kvar ${db.settings.monthStart === 1 ? 'i månaden' : 'i perioden'}</span><span class="value" style="${leftMonth < 0 ? 'color:var(--over)' : ''}">${kr(leftMonth)}</span></div>
@@ -403,7 +436,88 @@
     </div>`;
   }
 
+  // ---------- Planering ----------
+  const round100 = (n) => Math.round(n / 100) * 100;
+  function goalMonthly(g) {
+    if (typeof g.monthly === 'number') return g.monthly;
+    if (goalDone(g)) return 0;
+    const need = goalNeed(g);
+    return need && !need.late ? round100(need.perMonth) : 0;
+  }
+  function planTotals() {
+    const income = db.plan.income.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const fixed = fixedCats().reduce((s, c) => s + (Number(c.budget) || 0), 0);
+    const saving = db.goals.reduce((s, g) => s + goalMonthly(g), 0);
+    const variable = expenseCats().reduce((s, c) => s + (Number(c.budget) || 0), 0);
+    return { income, fixed, saving, variable, left: income - fixed - saving - variable };
+  }
+  function budgetView() {
+    if (ui.budgetView) return ui.budgetView;
+    return db.plan.income.length ? 'utfall' : 'plan';
+  }
+  const viewSeg = (v) => `<div class="seg" role="group" aria-label="Vy">
+      <button aria-pressed="${v === 'plan'}" data-act="budgetView" data-view="plan">Plan</button>
+      <button aria-pressed="${v === 'utfall'}" data-act="budgetView" data-view="utfall">Utfall</button>
+    </div>`;
+
   function screenBudget() {
+    return budgetView() === 'plan' ? planView() : utfallView();
+  }
+
+  function planView() {
+    const t = planTotals();
+    const p = period(0);
+    const out = t.fixed + t.saving + t.variable;
+    const base = Math.max(t.income, out, 1);
+    const seg = (v, color) => v > 0 ? `<div style="width:${(v / base * 100).toFixed(2)}%;background:${color}"></div>` : '';
+    const dot = (c, ring) => `<span aria-hidden="true" style="width:10px;height:10px;border-radius:5px;flex-shrink:0;${ring ? 'box-shadow:inset 0 0 0 1.5px var(--hero-muted)' : 'background:' + c}"></span>`;
+    const flowRow = (d, label, amount) => `<div style="display:flex;align-items:center;gap:10px;font-size:15px">${d}<span style="flex:1">${label}</span><span class="amt" style="font-size:14px">${amount}</span></div>`;
+    const goalsActive = db.goals.filter((g) => goalMonthly(g) > 0).length;
+    const perDay = t.variable / 30.44;
+    const hero = t.income > 0 ? `
+      <section class="hero" aria-label="Pengaflöde" style="gap:10px">
+        <span class="overline">Så används inkomsten</span>
+        <div role="img" aria-label="Fördelning av inkomsten" style="display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px;margin:4px 0 6px;background:var(--hero-track)">
+          ${seg(t.fixed, 'var(--on-hero)')}${seg(t.saving, 'var(--good-on-hero)')}${seg(t.variable, '#8E8B84')}${seg(Math.max(0, t.left), 'var(--accent)')}
+        </div>
+        ${flowRow(dot('', true), 'Inkomst', '+' + fmt(t.income))}
+        ${flowRow(dot('var(--on-hero)'), 'Fasta utgifter', fmt(-t.fixed))}
+        ${flowRow(dot('var(--good-on-hero)'), 'Sparande', fmt(-t.saving))}
+        ${flowRow(dot('#8E8B84'), 'Rörliga utgifter', fmt(-t.variable))}
+        <div style="display:flex;align-items:center;gap:10px;padding-top:12px;margin-top:2px;border-top:1px solid var(--hero-track)">
+          <div style="display:flex;flex-direction:column;gap:2px;flex:1">
+            <span style="font-size:13px;color:var(--hero-muted)">${t.left < 0 ? 'Planerat mer än du har' : 'Ofördelat'}</span>
+            <span style="font-size:24px;font-weight:600;letter-spacing:-.02em;${t.left < 0 ? 'color:#FF7A5C' : t.left === 0 ? 'color:var(--good-on-hero)' : ''}">${t.left === 0 ? '0 kr ✓' : kr(t.left)}</span>
+          </div>
+          ${t.left > 0 ? '<button class="pill" data-act="distribute" style="height:44px;padding:0 16px;background:var(--on-hero);color:#141414;font-weight:600">Fördela</button>'
+            : t.left < 0 ? '<button class="pill" data-act="planVariable" style="height:44px;padding:0 16px">Justera</button>' : ''}
+        </div>
+      </section>` : `
+      <section class="hero" aria-label="Kom igång" style="gap:12px">
+        <span class="overline">Planera månaden</span>
+        <span style="font-size:22px;font-weight:600;letter-spacing:-.02em">Börja med din inkomst</span>
+        <span style="font-size:14px;color:var(--hero-soft)">Fyll i lönen, sedan fasta räkningar, sparande och rörliga utgifter. Appen räknar ut vad som blir över.</span>
+        <button class="pill" data-act="planIncome" style="height:44px;background:var(--on-hero);color:#141414;font-weight:600">Lägg till inkomst</button>
+      </section>`;
+    const part = (act, name, meta, amount) => `<button class="row" data-act="${act}">
+        <div class="grow"><span class="title">${name}</span><span class="meta">${meta}</span></div>
+        <span class="amt" style="font-size:14px">${amount}</span><span class="chev">${I.chev}</span></button>`;
+    const inc = db.plan.income;
+    return `<div class="screen">
+      <div class="titles"><span class="overline">${esc(p.label)}</span><h1>Planera</h1></div>
+      ${viewSeg('plan')}
+      ${hero}
+      <section class="list" aria-label="Delar av planen">
+        ${part('planIncome', 'Inkomst', inc.length ? esc(inc.map((x) => x.name).join(', ')) + ' · lönedag ' + ordinal(db.settings.monthStart) : 'Inte ifylld', fmt(t.income))}
+        ${part('planFixed', 'Fasta utgifter', fixedCats().length ? fixedCats().length + ' räkningar' : 'Hyra, el, mobil …', fmt(t.fixed))}
+        ${part('planSaving', 'Sparande', db.goals.length ? goalsActive + ' av ' + db.goals.length + ' sparmål' : 'Inga sparmål än', fmt(t.saving))}
+        ${part('planVariable', 'Rörliga utgifter', expenseCats().length + ' kategorier · ≈ ' + kr(perDay) + '/dag', fmt(t.variable))}
+      </section>
+      <p class="muted" style="font-size:13px;margin:0;text-align:center">Planen gäller varje månad tills du ändrar den.</p>
+    </div>`;
+  }
+
+  function utfallView() {
     const p = period(ui.budgetOffset);
     const st = stats(p);
     const today = todayIso();
@@ -426,16 +540,24 @@
         <div class="grow"><div class="line1"><span class="title">Okategoriserat</span><span class="amt">${kr(st.uncategorized)}</span></div>
         <span class="meta">Tryck för att välja kategori</span></div></button>`);
     }
+    const fixed = fixedCats().map((c) => {
+      const paid = st.spentBy[c.id] || 0;
+      const done = c.budget > 0 ? paid >= c.budget * 0.9 : paid > 0;
+      return `<button class="row" data-act="openCat" data-id="${c.id}">
+        <div class="grow"><div class="line1"><span class="title">${esc(c.name)}</span><span class="amt ${paid > c.budget * 1.1 && c.budget > 0 ? 'over' : ''}">${fmt(paid)} / ${fmt(c.budget)} kr</span></div>
+        <span class="meta">${done ? `<span class="tag good">${I.check}Betald</span>` : 'Inte dragen än'}</span></div></button>`;
+    }).join('');
     return `<div class="screen">
       <div class="head">
         <button class="icon-btn" data-act="budgetPrev" aria-label="Föregående månad">${I.left}</button>
-        <div class="head-center"><span class="overline">Månadsbudget</span><h1 class="small">${esc(p.label)}</h1></div>
+        <div class="head-center"><span class="overline">Utfall</span><h1 class="small">${esc(p.label)}</h1></div>
         <button class="icon-btn" data-act="budgetNext" aria-label="Nästa månad" ${ui.budgetOffset >= 1 ? 'disabled' : ''}>${I.right}</button>
       </div>
+      ${viewSeg('utfall')}
       <section class="hero" aria-label="Summering">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px">
           <div style="display:flex;flex-direction:column;gap:4px">
-            <span style="font-size:13px;color:var(--hero-muted)">Använt</span>
+            <span style="font-size:13px;color:var(--hero-muted)">Använt av rörliga utgifter</span>
             <span style="font-size:32px;font-weight:600;letter-spacing:-.03em;line-height:1;${st.spent > st.budget && st.budget > 0 ? 'color:#FF7A5C' : ''}">${kr(st.spent)}</span>
           </div>
           <span style="font-size:13px;color:var(--hero-soft)">av ${kr(st.budget)}</span>
@@ -445,7 +567,9 @@
           <span>${Math.round(pct)} % av budget</span><span>${Math.round(elapsed)} % av ${db.settings.monthStart === 1 ? 'månaden' : 'perioden'}</span>
         </div>
       </section>
-      <section class="list" aria-label="Kategorier">${rows.join('') || '<p class="empty">Inga kategorier.</p>'}</section>
+      <h2>Rörliga utgifter</h2>
+      <section class="list" aria-label="Rörliga utgifter">${rows.join('') || '<p class="empty">Inga kategorier.</p>'}</section>
+      ${fixed ? `<h2>Fasta utgifter</h2><section class="list" aria-label="Fasta utgifter">${fixed}</section>` : ''}
       <button class="btn push-bottom" data-act="newCat">+ Ny kategori</button>
     </div>`;
   }
@@ -548,10 +672,7 @@
     const missing = fresh.filter((i) => !i.catId).length;
     const dates = items.map((i) => i.date).sort();
     const opt = (sel) => c.names.map((n, i) => `<option value="${i}" ${i === sel ? 'selected' : ''}>${esc(n)}</option>`).join('');
-    const catOpts = (it) => {
-      const list = it.amount < 0 ? expenseCats() : incomeCats();
-      return `<option value="">Välj kategori</option>` + list.map((x) => `<option value="${x.id}" ${x.id === it.catId ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-    };
+    const catOpts = (it) => catOptionsHtml(it.amount > 0, it.catId, 'Välj kategori');
     const shown = items.slice(0, 150);
     return `${fileInput}
       <div class="file-card">
@@ -590,7 +711,7 @@
   function manualView() {
     const m = ui.manual;
     const isInc = m.type === 'income';
-    const list = isInc ? incomeCats() : expenseCats();
+    const list = isInc ? incomeCats() : [...expenseCats(), ...fixedCats()];
     if (!m.catId || !list.some((c) => c.id === m.catId)) m.catId = null;
     const today = todayIso(), yest = addDays(today, -1);
     const custom = m.date !== today && m.date !== yest;
@@ -703,15 +824,12 @@
   function closeSheet() {
     $('#sheet-root').innerHTML = '';
     document.body.style.overflow = '';
-    ui.cal = null; ui.confirmFn = null;
+    ui.cal = null; ui.confirmFn = null; ui.draft = null;
   }
   const field = (id, label, input) => `<div class="field"><label for="${id}">${label}</label>${input}</div>`;
   const val = (id) => ($('#' + id) || {}).value || '';
 
-  function catOptions(kind, selected) {
-    const list = kind === 'income' ? incomeCats() : expenseCats();
-    return `<option value="">Ingen kategori</option>` + list.map((c) => `<option value="${c.id}" ${c.id === selected ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
-  }
+  function catOptions(kind, selected) { return catOptionsHtml(kind === 'income', selected, 'Ingen kategori'); }
 
   function txSheet(id) {
     const t = db.transactions.find((x) => x.id === id);
@@ -795,6 +913,141 @@
       <div class="btn-row"><button class="btn secondary" data-act="closeSheet">Avbryt</button><button class="btn" style="background:var(--over);color:#fff" data-act="confirmOk">${esc(okLabel)}</button></div>`, title);
   }
 
+  // ---------- Planeringsark (inkomst, fasta, rörliga) ----------
+  function guessFromTx(words) {
+    const since = addDays(todayIso(), -90);
+    const hit = [...db.transactions].filter((t) => t.amount < 0 && t.date >= since)
+      .sort((a, b) => (a.date < b.date ? 1 : -1))
+      .find((t) => { const s = ' ' + t.text.toLowerCase() + ' '; return words.some((w) => s.includes(w)); });
+    return hit ? Math.round(-hit.amount) : 0;
+  }
+  function guessSalary() {
+    const since = addDays(todayIso(), -62);
+    const hit = [...db.transactions].filter((t) => t.amount > 0 && t.date >= since && /\blön\b|\blon\b|salary/i.test(t.text))
+      .sort((a, b) => (a.date < b.date ? 1 : -1))[0];
+    return hit ? Math.round(hit.amount) : 0;
+  }
+  const DRAFT_TEXT = {
+    income: { title: 'Inkomst', sub: 'Vad kommer in varje månad, efter skatt?', add: '+ Annan inkomst', placeholder: 'T.ex. CSN, bidrag' },
+    fixed: { title: 'Fasta utgifter', sub: 'Vanliga räkningar är ifyllda. Ta bort det du inte har.', placeholder: 'Namn' },
+    variable: { title: 'Rörliga utgifter', sub: 'Budget per kategori och månad. Ta bort det du inte behöver.', placeholder: 'Namn' }
+  };
+  function openDraft(kind) {
+    let items;
+    if (kind === 'income') {
+      items = db.plan.income.length ? db.plan.income.map((x) => ({ id: x.id, name: x.name, amount: String(x.amount), meta: '' }))
+        : [{ id: null, name: 'Lön', amount: guessSalary() ? String(guessSalary()) : '', meta: guessSalary() ? 'från din import' : 'efter skatt' }];
+    } else {
+      const list = kind === 'fixed' ? fixedCats() : expenseCats();
+      items = list.map((c) => ({ id: c.id, name: c.name, amount: String(c.budget || ''), meta: '' }));
+      if (kind === 'fixed' && !db.plan.fixedSetup) {
+        for (const [name, words] of FIXED_SUGGESTIONS) {
+          if (items.some((x) => x.name.toLowerCase() === name.toLowerCase())) continue;
+          const g = guessFromTx(words);
+          items.push({ id: null, name, amount: g ? String(g) : '', meta: g ? 'från din import' : 'förslag' });
+        }
+      }
+    }
+    ui.draft = { kind, items, monthStart: db.settings.monthStart };
+    renderDraft();
+  }
+  function draftTotal() { return ui.draft.items.reduce((s, x) => s + Math.abs(parseAmount(x.amount) || 0), 0); }
+  function renderDraft(focusLast) {
+    const d = ui.draft, tx = DRAFT_TEXT[d.kind];
+    const names = d.items.map((x) => x.name.toLowerCase());
+    const pool = d.kind === 'fixed' ? [...FIXED_SUGGESTIONS.map((x) => x[0]), ...MORE_FIXED] : d.kind === 'variable' ? MORE_VARIABLE : [];
+    const chips = pool.filter((n) => !names.includes(n.toLowerCase()));
+    const rows = d.items.map((x, i) => `<div class="row" style="gap:8px;min-height:52px;padding:4px 0">
+        <div class="grow" style="gap:1px">
+          <input class="plain-input" value="${esc(x.name)}" placeholder="${tx.placeholder}" aria-label="Namn" data-input="dName" data-idx="${i}">
+          ${x.meta ? `<span class="meta">${esc(x.meta)}</span>` : ''}
+        </div>
+        <input class="amount-field${x.amount ? '' : ' empty'}" inputmode="numeric" placeholder="0" value="${esc(x.amount)}" aria-label="Belopp för ${esc(x.name)}" data-input="dAmount" data-idx="${i}">
+        <button class="x-btn" data-act="dRemove" data-idx="${i}" aria-label="Ta bort ${esc(x.name)}">${svg('<line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/>', 16, 2.2)}</button>
+      </div>`).join('');
+    const startOpts = Array.from({ length: 28 }, (_, i) => i + 1)
+      .map((n) => `<option value="${n}" ${n === d.monthStart ? 'selected' : ''}>${n === 1 ? '1:a (kalendermånad)' : ordinal(n)}</option>`).join('');
+    openSheet(`<h2>${tx.title}</h2>
+      <p class="muted" style="margin:-6px 0 0;font-size:14px">${tx.sub}</p>
+      <div class="list" style="background:transparent;padding:0">${rows || '<p class="empty">Inget här än.</p>'}</div>
+      ${d.kind === 'income' ? `<button class="btn secondary" data-act="dAdd" style="height:48px">${tx.add}</button>
+        ${field('d-start', 'Lönedag – budgetmånaden börjar då', `<select id="d-start" class="input" data-change="dMonthStart">${startOpts}</select>`)}` : ''}
+      ${chips.length ? `<div class="field"><span class="label">${d.kind === 'fixed' ? 'Fler förslag' : 'Lägg till kategori'}</span>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${chips.map((n) => `<button class="chip dashed" data-act="dAdd" data-name="${esc(n)}">+ ${esc(n)}</button>`).join('')}
+        <button class="chip dashed" data-act="dAdd" data-name="">+ Egen</button></div></div>` : (d.kind !== 'income' ? '<button class="btn secondary" data-act="dAdd" data-name="" style="height:48px">+ Egen</button>' : '')}
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--divider);padding-top:12px">
+        <span class="muted" style="font-size:14px">Totalt per månad</span><span id="d-total" style="font-size:20px;font-weight:600">${kr(draftTotal())}</span>
+      </div>
+      <div class="btn-row"><button class="btn secondary" data-act="closeSheet">Avbryt</button><button class="btn" data-act="dSave">Spara</button></div>`, tx.title);
+    if (focusLast) { const inputs = document.querySelectorAll('#sheet-root [data-input="' + focusLast + '"]'); const el = inputs[inputs.length - 1]; if (el) el.focus(); }
+  }
+  function commitDraft() {
+    const d = ui.draft;
+    const items = d.items.map((x) => ({ ...x, name: x.name.trim(), num: Math.abs(parseAmount(x.amount) || 0) }));
+    if (d.kind === 'income') {
+      db.plan.income = items.filter((x) => x.name && x.num > 0).map((x) => ({ id: x.id || uid(), name: x.name, amount: x.num }));
+      db.settings.monthStart = d.monthStart;
+      return 0;
+    }
+    const kindName = d.kind === 'fixed' ? 'fixed' : 'expense';
+    const keep = new Set(items.filter((x) => x.id).map((x) => x.id));
+    let orphaned = 0;
+    for (const c of db.categories.filter((c) => c.kind === kindName && !keep.has(c.id))) {
+      db.transactions.forEach((t) => { if (t.catId === c.id) { t.catId = null; orphaned++; } });
+      db.categories = db.categories.filter((x) => x.id !== c.id);
+    }
+    for (const x of items) {
+      if (x.id && cat(x.id)) Object.assign(cat(x.id), { name: x.name || cat(x.id).name, budget: x.num });
+      else if (x.name && (kindName === 'expense' || x.num > 0)) db.categories.push({ id: uid(), name: x.name, budget: x.num, kind: kindName });
+    }
+    if (d.kind === 'fixed') {
+      db.plan.fixedSetup = true;
+      // Koppla okategoriserade dragningar som känns igen (t.ex. "Hyra oktober") till rätt fast utgift
+      for (const [name, words] of FIXED_SUGGESTIONS) {
+        const c = db.categories.find((x) => x.kind === 'fixed' && x.name === name);
+        if (!c) continue;
+        db.transactions.forEach((t) => {
+          if (t.amount < 0 && !cat(t.catId) && words.some((w) => (' ' + t.text.toLowerCase() + ' ').includes(w))) { t.catId = c.id; learn(t.text, c.id); }
+        });
+      }
+    }
+    return orphaned;
+  }
+
+  function savingSheet() {
+    const goals = db.goals.filter((g) => !goalDone(g));
+    ui.draft = { kind: 'saving', items: goals.map((g) => ({ id: g.id, amount: String(goalMonthly(g) || '') })) };
+    const rows = goals.map((g, i) => {
+      const need = goalNeed(g);
+      const meta = kr(goalSaved(g)) + ' av ' + kr(g.target) + (need && !need.late ? ' · behöver ≈ ' + kr(round100(need.perMonth)) + '/mån' : g.deadline ? '' : ' · inget slutdatum');
+      return `<div class="row" style="gap:8px;min-height:56px">
+        <div class="grow" style="gap:2px"><span class="title">${esc(g.name)}</span><span class="meta">${meta}</span></div>
+        <input class="amount-field" inputmode="numeric" placeholder="0" value="${esc(ui.draft.items[i].amount)}" aria-label="Månadsbelopp för ${esc(g.name)}" data-input="dAmount" data-idx="${i}">
+      </div>`;
+    }).join('');
+    openSheet(`<h2>Sparande</h2>
+      <p class="muted" style="margin:-6px 0 0;font-size:14px">Hur mycket vill du lägga undan per månad till varje mål?</p>
+      ${goals.length ? `<div class="list" style="background:transparent;padding:0">${rows}</div>` : '<p class="empty">Du har inga aktiva sparmål.</p>'}
+      <button class="btn secondary" data-act="newGoal" style="height:48px">+ Nytt sparmål</button>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid var(--divider);padding-top:12px">
+        <span class="muted" style="font-size:14px">Totalt per månad</span><span id="d-total" style="font-size:20px;font-weight:600">${kr(draftTotal())}</span>
+      </div>
+      <div class="btn-row"><button class="btn secondary" data-act="closeSheet">Avbryt</button><button class="btn" data-act="dSave">Spara</button></div>`, 'Sparande');
+  }
+
+  function distributeSheet() {
+    const t = planTotals();
+    const goals = db.goals.filter((g) => !goalDone(g));
+    const opt = (kind, id, label, meta) => `<button class="row" data-act="distTo" data-kind="${kind}" data-id="${id}">
+      <div class="grow"><span class="title">${esc(label)}</span><span class="meta">${meta}</span></div><span class="chev">${I.chev}</span></button>`;
+    openSheet(`<h2>Fördela ${kr(t.left)}</h2>
+      <p class="muted" style="margin:-6px 0 0;font-size:14px">Välj vart pengarna som blir över ska gå.</p>
+      ${goals.length ? `<span class="group-title" style="margin:4px 0 -6px">Spara</span><div class="list" style="background:var(--bg)">${goals.map((g) => opt('goal', g.id, g.name, 'Nu ' + kr(goalMonthly(g)) + '/mån → ' + kr(goalMonthly(g) + t.left))).join('')}</div>` : ''}
+      <span class="group-title" style="margin:4px 0 -6px">Rörliga utgifter</span>
+      <div class="list" style="background:var(--bg)">${expenseCats().map((c) => opt('cat', c.id, c.name, 'Nu ' + kr(c.budget) + ' → ' + kr(c.budget + t.left))).join('')}</div>
+      <button class="btn secondary" data-act="closeSheet">Avbryt</button>`, 'Fördela');
+  }
+
   // ---------- Kalender ----------
   function calSheet() {
     const c = ui.cal;
@@ -836,7 +1089,7 @@
       t.amount = amount;
       t.date = val('t-date') || t.date;
       const c = cat(val('t-cat'));
-      t.catId = c && ((amount < 0) === (c.kind === 'expense')) ? c.id : null;
+      t.catId = c && ((amount < 0) === isOut(c)) ? c.id : null;
       t.hash = txHash(t);
       learn(t.text, t.catId);
       save(); closeSheet(); render(); toast('Sparat');
@@ -846,6 +1099,36 @@
       save(); closeSheet(); render(); toast('Transaktionen togs bort');
     },
     budgetPrev() { ui.budgetOffset--; render(); },
+    budgetView(el) { ui.budgetView = el.dataset.view; render(); },
+    planIncome() { ui.budgetView = 'plan'; openDraft('income'); },
+    planFixed() { openDraft('fixed'); },
+    planVariable() { closeSheet(); openDraft('variable'); },
+    planSaving() { savingSheet(); },
+    distribute() { distributeSheet(); },
+    distTo(el) {
+      const left = planTotals().left;
+      if (left <= 0) return closeSheet();
+      if (el.dataset.kind === 'goal') { const g = db.goals.find((x) => x.id === el.dataset.id); g.monthly = goalMonthly(g) + left; toast(kr(left) + ' till ' + g.name); }
+      else { const c = cat(el.dataset.id); c.budget = (Number(c.budget) || 0) + left; toast(kr(left) + ' till ' + c.name); }
+      save(); closeSheet(); render();
+    },
+    dRemove(el) { ui.draft.items.splice(Number(el.dataset.idx), 1); renderDraft(); },
+    dAdd(el) {
+      const name = el.dataset.name != null ? el.dataset.name : '';
+      ui.draft.items.push({ id: null, name, amount: '', meta: '' });
+      renderDraft(name ? 'dAmount' : 'dName');
+    },
+    dSave() {
+      const d = ui.draft;
+      if (d.kind === 'saving') {
+        d.items.forEach((x) => { const g = db.goals.find((y) => y.id === x.id); if (g) g.monthly = Math.abs(parseAmount(x.amount) || 0); });
+        save(); closeSheet(); render(); toast('Sparat');
+        return;
+      }
+      const orphaned = commitDraft();
+      save(); closeSheet(); render();
+      toast(orphaned ? 'Sparat – ' + orphaned + ' transaktioner blev okategoriserade' : 'Sparat');
+    },
     budgetNext() { if (ui.budgetOffset < 1) { ui.budgetOffset++; render(); } },
     openCat(el) { catSheet(el.dataset.id); },
     newCat() { newCatSheet(); },
@@ -1031,6 +1314,7 @@
       render();
     },
     reminderDay(el) { $('#r-link').setAttribute('href', 'paminnelse-' + el.value + '.ics'); },
+    dMonthStart(el) { ui.draft.monthStart = Number(el.value) || 1; },
     monthStart(el) { db.settings.monthStart = Number(el.value) || 1; ui.budgetOffset = 0; save(); render(); toast('Sparat'); },
     async restore(el) {
       const f = el.files && el.files[0];
@@ -1047,6 +1331,12 @@
   };
   const inputs = {
     mAmount(el) { ui.manual.amount = el.value; },
+    dName(el) { ui.draft.items[Number(el.dataset.idx)].name = el.value; },
+    dAmount(el) {
+      ui.draft.items[Number(el.dataset.idx)].amount = el.value;
+      el.classList.toggle('empty', !el.value);
+      const tot = $('#d-total'); if (tot) tot.textContent = kr(draftTotal());
+    },
     mDesc(el) { ui.manual.desc = el.value; }
   };
 
