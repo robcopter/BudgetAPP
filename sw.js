@@ -1,6 +1,6 @@
 // Service worker: gör att appen fungerar utan internet.
 // Höj VERSION när du laddar upp nya filer, så hämtar telefonen den nya versionen.
-const VERSION = 'budget-v1.1.0';
+const VERSION = 'budget-v1.1.1';
 const FILES = [
   './',
   './index.html',
@@ -15,7 +15,12 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: 'reload' = hämta alltid färska filer från servern, aldrig webbläsarens gamla kopior
+  e.waitUntil(
+    caches.open(VERSION)
+      .then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' }))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -26,20 +31,21 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// Nätverk först för sidan (så uppdateringar syns), cache först för allt annat.
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   const url = new URL(req.url);
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   // Kalenderfiler hämtas alltid direkt från nätet
   if (url.pathname.endsWith('.ics')) return;
+  // Sidan: nätet först (så uppdateringar syns), sparad kopia om du är offline
   if (req.mode === 'navigate') {
     e.respondWith(
-      fetch(req)
-        .then((res) => { const copy = res.clone(); caches.open(VERSION).then((c) => c.put('./index.html', copy)); return res; })
+      fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
+        .then((res) => { if (res.ok) { const copy = res.clone(); caches.open(VERSION).then((c) => c.put('./index.html', copy)); } return res; })
         .catch(() => caches.match('./index.html'))
     );
     return;
   }
+  // Allt annat: sparad kopia först
   e.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
 });
