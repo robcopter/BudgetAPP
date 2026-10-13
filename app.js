@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.5.1';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -532,6 +532,9 @@
     const diff = budget - used;
     return `<span class="amt ${diff < 0 ? 'over' : ''}" id="left-${id}">${diff < 0 ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'}</span>`;
   }
+  function paidLabel(budget, paid, id) {
+    return `<span class="amt ${budget > 0 && paid > budget * 1.1 ? 'over' : ''}" id="left-${id}">${fmt(paid)} / ${fmt(budget)} kr</span>`;
+  }
   function setAdjustment(catId, target, p) {
     const real = db.transactions.filter((t) => t.catId === catId && t.source !== 'adjust' && t.amount < 0 && inPeriod(t.date, p))
       .reduce((s, t) => s - t.amount, 0);
@@ -577,9 +580,18 @@
     const fixed = fixedCats().map((c) => {
       const paid = st.spentBy[c.id] || 0;
       const done = c.budget > 0 ? paid >= c.budget * 0.9 : paid > 0;
-      return `<button class="row" data-act="openCat" data-id="${c.id}">
-        <div class="grow"><div class="line1"><span class="title">${esc(c.name)}</span><span class="amt ${paid > c.budget * 1.1 && c.budget > 0 ? 'over' : ''}">${fmt(paid)} / ${fmt(c.budget)} kr</span></div>
-        <span class="meta">${done ? `<span class="tag good">${I.check}Betald</span>` : 'Inte dragen än'}</span></div></button>`;
+      const adj = adjustTx(c.id, p);
+      const others = paid - (adj ? -adj.amount : 0);
+      const max = sliderMax(c.budget, paid);
+      return `<div class="row slider-row">
+        <div class="grow">
+          <button class="line1 row-link" data-act="openCat" data-id="${c.id}"><span class="title">${esc(c.name)}</span>${paidLabel(c.budget, paid, c.id)}</button>
+          <span class="meta" id="paid-${c.id}">${done ? `<span class="tag good">${I.check}Betald</span>` : 'Inte dragen än'}</span>
+          <input type="range" class="slider" min="0" max="${max}" step="${sliderStep(max)}" value="${Math.round(paid)}"
+            aria-label="Betalt för ${esc(c.name)}" aria-valuetext="${esc(kr(paid))} betalt"
+            data-input="slide" data-change="slideDone" data-kind="fixed" data-id="${c.id}" data-budget="${c.budget}" data-others="${Math.round(others)}"
+            style="${sliderFill(paid, max, c.budget * 1.1)}">
+        </div></div>`;
     }).join('');
     return `<div class="screen">
       <div class="head">
@@ -1553,7 +1565,7 @@
       setAdjustment(c.id, Number(el.value), period(ui.budgetOffset));
       save();
       const y = window.scrollY; render(); window.scrollTo(0, y);
-      toast(c.name + ': ' + kr(Number(el.value)) + ' använt');
+      toast(c.name + ': ' + kr(Number(el.value)) + (c.kind === 'fixed' ? ' betalt' : ' använt'));
     },
     dMonthStart(el) { ui.draft.monthStart = Number(el.value) || 1; },
     monthStart(el) { db.settings.monthStart = Number(el.value) || 1; ui.budgetOffset = 0; save(); render(); toast('Sparat'); },
@@ -1576,10 +1588,12 @@
       const others = Number(el.dataset.others) || 0, budget = Number(el.dataset.budget) || 0;
       if (Number(el.value) < others) el.value = others; // går inte att dra under det som redan är bokfört
       const v = Number(el.value);
-      el.setAttribute('style', sliderFill(v, Number(el.max), budget));
-      el.setAttribute('aria-valuetext', kr(v) + ' använt');
+      const fixed = el.dataset.kind === 'fixed';
+      el.setAttribute('style', sliderFill(v, Number(el.max), fixed ? budget * 1.1 : budget));
+      el.setAttribute('aria-valuetext', kr(v) + (fixed ? ' betalt' : ' använt'));
       const lab = $('#left-' + el.dataset.id);
-      if (lab) { const diff = budget - v; lab.textContent = diff < 0 ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'; lab.classList.toggle('over', diff < 0); }
+      if (lab && fixed) { lab.textContent = fmt(v) + ' / ' + fmt(budget) + ' kr'; lab.classList.toggle('over', budget > 0 && v > budget * 1.1); }
+      else if (lab) { const diff = budget - v; lab.textContent = diff < 0 ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'; lab.classList.toggle('over', diff < 0); }
     },
     dName(el) { ui.draft.items[Number(el.dataset.idx)].name = el.value; },
     dAmount(el) {
