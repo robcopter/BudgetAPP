@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.3.0';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -150,7 +150,7 @@
       if (t.amount >= 0) continue;
       const c = cat(t.catId);
       if (c && c.kind !== 'expense') continue; // inkomster och fasta räkningar räknas inte mot dagsbudgeten
-      if (t.date < today) before += -t.amount; else if (t.date === today) todaySpent += -t.amount;
+      if (t.source === 'adjust' || t.date < today) before += -t.amount; else if (t.date === today) todaySpent += -t.amount;
     }
     const daysLeft = daysBetween(today, p.end) + 1;
     const allowance = Math.max(0, (st.budget - before) / daysLeft);
@@ -381,7 +381,7 @@
       .map((c) => ({ c, used: d.st.spentBy[c.id] || 0 }))
       .sort((a, b) => (b.used - a.used) || (b.c.budget - a.c.budget))
       .slice(0, 4);
-    const recent = [...db.transactions].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 5);
+    const recent = db.transactions.filter((t) => t.source !== 'adjust').sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 5);
     return `<div class="screen">
       <div class="head">
         <div class="titles">
@@ -517,6 +517,34 @@
     </div>`;
   }
 
+  // ---------- Reglage för att justera utfallet ----------
+  const adjustTx = (catId, p) => db.transactions.find((t) => t.catId === catId && t.source === 'adjust' && inPeriod(t.date, p));
+  const sliderMax = (budget, used) => Math.max(100, Math.ceil(Math.max(Number(budget) || 0, used) / 100) * 100);
+  const sliderStep = (max) => (max >= 5000 ? 50 : max >= 1000 ? 10 : 5);
+  function sliderFill(used, max, budget) {
+    const pct = clamp(used / max * 100, 0, 100).toFixed(2);
+    const color = budget > 0 && used > budget ? 'var(--accent)' : 'var(--bar)';
+    return `--pct:${pct}%;--fill:${color}`;
+  }
+  function leftLabel(budget, used, id) {
+    const diff = budget - used;
+    return `<span class="amt ${diff < 0 ? 'over' : ''}" id="left-${id}">${diff < 0 ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'}</span>`;
+  }
+  function setAdjustment(catId, target, p) {
+    const real = db.transactions.filter((t) => t.catId === catId && t.source !== 'adjust' && t.amount < 0 && inPeriod(t.date, p))
+      .reduce((s, t) => s - t.amount, 0);
+    const need = Math.round(target - real);
+    let adj = adjustTx(catId, p);
+    if (need <= 0) { if (adj) db.transactions = db.transactions.filter((t) => t !== adj); return; }
+    if (!adj) {
+      const today = todayIso();
+      adj = { id: uid(), date: inPeriod(today, p) ? today : p.end, text: 'Justering', amount: 0, catId, source: 'adjust' };
+      db.transactions.push(adj);
+    }
+    adj.amount = -need;
+    adj.hash = txHash(adj);
+  }
+
   function utfallView() {
     const p = period(ui.budgetOffset);
     const st = stats(p);
@@ -525,14 +553,18 @@
     const pct = st.budget > 0 ? st.spent / st.budget * 100 : 0;
     const rows = expenseCats().map((c) => {
       const used = st.spentBy[c.id] || 0;
-      const diff = c.budget - used;
-      const over = diff < 0;
-      return `<button class="row" data-act="openCat" data-id="${c.id}">
-        <span class="badge">${esc(shortName(c.name))}</span>
+      const adj = adjustTx(c.id, p);
+      const others = used - (adj ? -adj.amount : 0); // det som kommer från riktiga transaktioner
+      const max = sliderMax(c.budget, used);
+      return `<div class="row slider-row">
+        <button class="badge" data-act="openCat" data-id="${c.id}" aria-label="Visa ${esc(c.name)}">${esc(shortName(c.name))}</button>
         <div class="grow">
-          <div class="line1"><span class="title">${esc(c.name)}</span><span class="amt ${over ? 'over' : ''}">${over ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'}</span></div>
-          ${bar(c.budget > 0 ? used / c.budget * 100 : (used > 0 ? 100 : 0), over ? 'over' : '', true)}
-        </div></button>`;
+          <button class="line1 row-link" data-act="openCat" data-id="${c.id}"><span class="title">${esc(c.name)}</span>${leftLabel(c.budget, used, c.id)}</button>
+          <input type="range" class="slider" min="0" max="${max}" step="${sliderStep(max)}" value="${Math.round(used)}"
+            aria-label="Använt i ${esc(c.name)}" aria-valuetext="${esc(kr(used))} använt"
+            data-input="slide" data-change="slideDone" data-id="${c.id}" data-budget="${c.budget}" data-others="${Math.round(others)}"
+            style="${sliderFill(used, max, c.budget)}">
+        </div></div>`;
     });
     if (st.uncategorized > 0) {
       rows.push(`<button class="row" data-act="openCat" data-id="">
@@ -1314,6 +1346,14 @@
       render();
     },
     reminderDay(el) { $('#r-link').setAttribute('href', 'paminnelse-' + el.value + '.ics'); },
+    slideDone(el) {
+      const c = cat(el.dataset.id);
+      if (!c) return;
+      setAdjustment(c.id, Number(el.value), period(ui.budgetOffset));
+      save();
+      const y = window.scrollY; render(); window.scrollTo(0, y);
+      toast(c.name + ': ' + kr(Number(el.value)) + ' använt');
+    },
     dMonthStart(el) { ui.draft.monthStart = Number(el.value) || 1; },
     monthStart(el) { db.settings.monthStart = Number(el.value) || 1; ui.budgetOffset = 0; save(); render(); toast('Sparat'); },
     async restore(el) {
@@ -1331,6 +1371,15 @@
   };
   const inputs = {
     mAmount(el) { ui.manual.amount = el.value; },
+    slide(el) {
+      const others = Number(el.dataset.others) || 0, budget = Number(el.dataset.budget) || 0;
+      if (Number(el.value) < others) el.value = others; // går inte att dra under det som redan är bokfört
+      const v = Number(el.value);
+      el.setAttribute('style', sliderFill(v, Number(el.max), budget));
+      el.setAttribute('aria-valuetext', kr(v) + ' använt');
+      const lab = $('#left-' + el.dataset.id);
+      if (lab) { const diff = budget - v; lab.textContent = diff < 0 ? '−' + fmt(-diff) + ' kr' : fmt(diff) + ' kr kvar'; lab.classList.toggle('over', diff < 0); }
+    },
     dName(el) { ui.draft.items[Number(el.dataset.idx)].name = el.value; },
     dAmount(el) {
       ui.draft.items[Number(el.dataset.idx)].amount = el.value;
