@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.5.1';
+  const APP_VERSION = '1.5.2';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -521,12 +521,15 @@
 
   // ---------- Reglage för att justera utfallet ----------
   const adjustTx = (catId, p) => db.transactions.find((t) => t.catId === catId && t.source === 'adjust' && inPeriod(t.date, p));
-  const sliderMax = (budget, used) => Math.max(100, Math.ceil(Math.max(Number(budget) || 0, used) / 100) * 100);
+  // Rörliga: skalan går upp till 150 % av budgeten så att man kan gå över. Fasta: taket är budgeten.
+  const sliderMax = (budget, used) => Math.max(500, Math.ceil(Math.max((Number(budget) || 0) * 1.5, used * 1.1) / 100) * 100);
+  const fixedMax = (budget, used) => Math.max(1, Math.round(Math.max(Number(budget) || 0, used)));
   const sliderStep = (max) => (max >= 5000 ? 50 : max >= 1000 ? 10 : 5);
-  function sliderFill(used, max, budget) {
+  function sliderFill(used, max, budget, mark) {
     const pct = clamp(used / max * 100, 0, 100).toFixed(2);
     const color = budget > 0 && used > budget ? 'var(--accent)' : 'var(--bar)';
-    return `--pct:${pct}%;--fill:${color}`;
+    const m = mark && budget > 0 && budget < max ? (budget / max * 100).toFixed(2) + '%' : '-10px';
+    return `--pct:${pct}%;--fill:${color};--mark:${m}`;
   }
   function leftLabel(budget, used, id) {
     const diff = budget - used;
@@ -568,7 +571,7 @@
           <input type="range" class="slider" min="0" max="${max}" step="${sliderStep(max)}" value="${Math.round(used)}"
             aria-label="Använt i ${esc(c.name)}" aria-valuetext="${esc(kr(used))} använt"
             data-input="slide" data-change="slideDone" data-id="${c.id}" data-budget="${c.budget}" data-others="${Math.round(others)}"
-            style="${sliderFill(used, max, c.budget)}">
+            style="${sliderFill(used, max, c.budget, true)}">
         </div></div>`;
     });
     if (st.uncategorized > 0) {
@@ -582,15 +585,15 @@
       const done = c.budget > 0 ? paid >= c.budget * 0.9 : paid > 0;
       const adj = adjustTx(c.id, p);
       const others = paid - (adj ? -adj.amount : 0);
-      const max = sliderMax(c.budget, paid);
+      const max = fixedMax(c.budget, paid);
       return `<div class="row slider-row">
         <div class="grow">
           <button class="line1 row-link" data-act="openCat" data-id="${c.id}"><span class="title">${esc(c.name)}</span>${paidLabel(c.budget, paid, c.id)}</button>
           <span class="meta" id="paid-${c.id}">${done ? `<span class="tag good">${I.check}Betald</span>` : 'Inte dragen än'}</span>
-          <input type="range" class="slider" min="0" max="${max}" step="${sliderStep(max)}" value="${Math.round(paid)}"
+          <input type="range" class="slider" min="0" max="${max}" step="1" value="${Math.round(paid)}"
             aria-label="Betalt för ${esc(c.name)}" aria-valuetext="${esc(kr(paid))} betalt"
             data-input="slide" data-change="slideDone" data-kind="fixed" data-id="${c.id}" data-budget="${c.budget}" data-others="${Math.round(others)}"
-            style="${sliderFill(paid, max, c.budget * 1.1)}">
+            style="${sliderFill(paid, max, c.budget * 1.1, false)}">
         </div></div>`;
     }).join('');
     return `<div class="screen">
@@ -1589,7 +1592,7 @@
       if (Number(el.value) < others) el.value = others; // går inte att dra under det som redan är bokfört
       const v = Number(el.value);
       const fixed = el.dataset.kind === 'fixed';
-      el.setAttribute('style', sliderFill(v, Number(el.max), fixed ? budget * 1.1 : budget));
+      el.setAttribute('style', sliderFill(v, Number(el.max), fixed ? budget * 1.1 : budget, !fixed));
       el.setAttribute('aria-valuetext', kr(v) + (fixed ? ' betalt' : ' använt'));
       const lab = $('#left-' + el.dataset.id);
       if (lab && fixed) { lab.textContent = fmt(v) + ' / ' + fmt(budget) + ' kr'; lab.classList.toggle('over', budget > 0 && v > budget * 1.1); }
