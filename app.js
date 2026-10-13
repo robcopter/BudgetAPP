@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.4.0';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -84,6 +84,8 @@
     db.v = 2;
   }
   function save() {
+    db.updatedAt = Date.now();
+    if (typeof schedulePush === 'function') schedulePush();
     try { localStorage.setItem(KEY, JSON.stringify(db)); }
     catch (e) { toast('Kunde inte spara – lagringen är full eller blockerad'); }
   }
@@ -800,6 +802,7 @@
       <div class="list">
         <label class="setting"><div class="txt"><b>Månaden börjar</b><span>Välj din lönedag om du budgeterar lön till lön</span></div>
           <select data-change="monthStart" aria-label="Månaden börjar">${startOpts}</select></label>
+        <button class="setting" data-act="openSync"><div class="txt"><b>Synk mellan enheter</b><span>${sync ? (sync.lastError ? esc(sync.lastError) : 'På – krypterad via GitHub') : 'Av – håll mobil och dator i takt'}</span></div><span class="chev">${I.chev}</span></button>
         <button class="setting" data-act="reminder"><div class="txt"><b>Månatlig påminnelse</b><span>Lägg in en återkommande händelse i kalendern</span></div><span class="chev">${I.chev}</span></button>
       </div>
       <div class="group-title">Data</div>
@@ -813,6 +816,164 @@
       <input id="restore-file" class="sr-only" type="file" accept=".json,application/json" data-change="restore">
       <p class="muted" style="font-size:12px;text-align:center;margin:8px 0 0">Budget ${APP_VERSION} · Datan sparas bara på den här enheten.</p>
     </div>`;
+  }
+
+  // ================================================================
+  // Synk mellan enheter – krypterad fil i en privat GitHub Gist
+  // ================================================================
+  // Inloggningsuppgifterna sparas separat från budgetdatan, så de följer inte med i säkerhetskopior.
+  const SYNC_KEY = 'budget-sync';
+  const GIST_FILE = 'budget-sync.json';
+  const DEVICE = /iPhone|iPad/.test(navigator.userAgent) ? 'iPhone' : /Android/.test(navigator.userAgent) ? 'mobilen' : 'datorn';
+  let sync = null; // { token, gistId, key (base64), base, lastSync, lastError }
+  let syncBusy = false, pushTimer = null;
+  function loadSync() { try { sync = JSON.parse(localStorage.getItem(SYNC_KEY) || 'null'); } catch (e) { sync = null; } }
+  function saveSync() { try { if (sync) localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); else localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignorera */ } }
+
+  const b64 = (buf) => { const u = new Uint8Array(buf); let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+  const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  async function deriveKey(pass, salt) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pass), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 250000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+  }
+  const importKey = (raw) => crypto.subtle.importKey('raw', unb64(raw), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  async function encryptDb(key, salt) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(db)));
+    return JSON.stringify({ v: 1, app: 'budget', salt: b64(salt), iv: b64(iv), data: b64(data), updated: db.updatedAt || 0, device: DEVICE });
+  }
+  async function decryptPayload(key, p) {
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(p.iv) }, key, unb64(p.data));
+    return JSON.parse(new TextDecoder().decode(plain));
+  }
+
+  async function gh(path, opts = {}, token = sync && sync.token) {
+    const res = await fetch('https://api.github.com' + path, {
+      ...opts, cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token, ...(opts.body ? { 'Content-Type': 'application/json' } : {}) }
+    });
+    if (res.status === 401 || res.status === 403) throw new Error('auth');
+    if (res.status === 404) throw new Error('notfound');
+    if (!res.ok) throw new Error('http' + res.status);
+    return res.json();
+  }
+  async function readGist(id, token) {
+    const g = await gh('/gists/' + id, {}, token);
+    const f = g.files && g.files[GIST_FILE];
+    if (!f) throw new Error('notfound');
+    const content = f.truncated ? await (await fetch(f.raw_url, { cache: 'no-store' })).text() : f.content;
+    return JSON.parse(content);
+  }
+  async function findGist(token) {
+    for (let page = 1; page <= 5; page++) {
+      const list = await gh('/gists?per_page=100&page=' + page, {}, token);
+      const hit = list.find((g) => g.files && g.files[GIST_FILE]);
+      if (hit) return hit.id;
+      if (list.length < 100) break;
+    }
+    return null;
+  }
+  async function writeGist(content) {
+    await gh('/gists/' + sync.gistId, { method: 'PATCH', body: JSON.stringify({ files: { [GIST_FILE]: { content } } }) });
+  }
+  const syncErrorText = (e) => e.message === 'auth' ? 'Nyckeln fungerar inte längre – koppla in synken igen'
+    : e.message === 'decrypt' ? 'Fel lösenord'
+    : e.message === 'notfound' ? 'Synkfilen hittades inte på GitHub'
+    : (!navigator.onLine || e instanceof TypeError) ? 'Ingen internetanslutning – synkar när du är online igen'
+    : 'Synken misslyckades (' + e.message + ')';
+
+  // Jämför med senast synkade version. Den som ändrats skickas/hämtas; ändrats båda vinner den senaste.
+  async function runSync(manual) {
+    if (!sync || syncBusy) return;
+    syncBusy = true;
+    try {
+      const key = await importKey(sync.key);
+      const remote = await readGist(sync.gistId);
+      const local = db.updatedAt || 0, base = sync.base || 0;
+      const remoteNewer = (remote.updated || 0) > base, localNewer = local > base;
+      let msg = null;
+      if (remoteNewer && (!localNewer || remote.updated > local)) {
+        let data;
+        try { data = await decryptPayload(key, remote); } catch (e) { throw new Error('decrypt'); }
+        localStorage.setItem(KEY, JSON.stringify(data)); load(); applyTheme();
+        sync.base = db.updatedAt || remote.updated;
+        msg = (localNewer ? 'Ändringar på två enheter – den senaste behölls' : 'Uppdaterad från ' + (remote.device || 'annan enhet'));
+        if (!$('#sheet-root').innerHTML) render();
+      } else if (localNewer) {
+        await writeGist(await encryptDb(key, unb64(remote.salt)));
+        sync.base = local;
+        if (remoteNewer) msg = 'Ändringar på två enheter – den senaste behölls';
+      } else if (manual) msg = 'Allt är redan synkat';
+      sync.lastSync = Date.now(); sync.lastError = null; saveSync();
+      if (msg) toast(msg);
+    } catch (e) {
+      sync.lastError = syncErrorText(e); saveSync();
+      if (manual || e.message === 'auth' || e.message === 'decrypt') toast(sync.lastError);
+    } finally {
+      syncBusy = false;
+      if (route() === 'installningar' && !$('#sheet-root').innerHTML) render();
+    }
+  }
+  function schedulePush() {
+    if (!sync) return;
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => runSync(false), 1500);
+  }
+
+  // Koppla in: hittar befintlig synkfil eller skapar en ny
+  async function connectSync(token, pass, choice) {
+    const gistId = await findGist(token);
+    if (gistId) {
+      const remote = await readGist(gistId, token);
+      const key = await deriveKey(pass, unb64(remote.salt));
+      let data;
+      try { data = await decryptPayload(key, remote); } catch (e) { throw new Error('decrypt'); }
+      const raw = b64(await crypto.subtle.exportKey('raw', key));
+      if (choice === 'local') {
+        sync = { token, gistId, key: raw, base: remote.updated || 0 };
+        db.updatedAt = Date.now(); localStorage.setItem(KEY, JSON.stringify(db));
+        saveSync(); await runSync(false);
+        return 'Synken är på – den här enhetens data finns nu i molnet';
+      }
+      localStorage.setItem(KEY, JSON.stringify(data)); load(); applyTheme();
+      sync = { token, gistId, key: raw, base: db.updatedAt || remote.updated || 0, lastSync: Date.now() };
+      saveSync();
+      return 'Synken är på – data hämtad från ' + (remote.device || 'annan enhet');
+    }
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await deriveKey(pass, salt);
+    db.updatedAt = db.updatedAt || Date.now();
+    const content = await encryptDb(key, salt);
+    const g = await gh('/gists', { method: 'POST', body: JSON.stringify({ description: 'Budget-appen – krypterad synk (går inte att läsa utan ditt lösenord)', public: false, files: { [GIST_FILE]: { content } } }) }, token);
+    sync = { token, gistId: g.id, key: b64(await crypto.subtle.exportKey('raw', key)), base: db.updatedAt, lastSync: Date.now() };
+    saveSync();
+    return 'Synken är på – öppna appen på din andra enhet och koppla in med samma nyckel och lösenord';
+  }
+
+  function syncSheet() {
+    if (sync) {
+      const when = sync.lastSync ? new Date(sync.lastSync).toLocaleString('sv-SE', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : 'aldrig';
+      openSheet(`<h2>Synk mellan enheter</h2>
+        <div class="card" style="background:var(--bg);gap:4px">
+          <span class="label">Status</span>
+          <span style="font-size:15px;font-weight:500">${sync.lastError ? esc(sync.lastError) : 'På · senast synkad ' + esc(when)}</span>
+        </div>
+        <p class="muted" style="margin:0;font-size:14px">Appen hämtar ändringar när du öppnar den och skickar dina ändringar automatiskt. Datan är krypterad med ditt lösenord.</p>
+        <button class="btn" data-act="syncNow">Synka nu</button>
+        <button class="btn danger" data-act="syncOff">Stäng av synk på den här enheten</button>
+        <button class="btn secondary" data-act="closeSheet">Stäng</button>`, 'Synk');
+      return;
+    }
+    openSheet(`<h2>Synk mellan enheter</h2>
+      <p class="muted" style="margin:-6px 0 0;font-size:14px">Budgeten sparas krypterad i en privat fil på ditt GitHub-konto. Gör så här på båda enheterna:</p>
+      <ol style="margin:0;padding-left:20px;font-size:14px;line-height:1.5">
+        <li>Skapa en nyckel på <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">GitHub › Fine-grained token</a>. Under <b>Account permissions</b> väljer du <b>Gists: Read and write</b>. Kopiera nyckeln.</li>
+        <li>Välj ett lösenord för krypteringen. Använd <b>samma</b> lösenord på alla enheter – det kan inte återställas.</li>
+      </ol>
+      ${field('s-token', 'GitHub-nyckel', '<input id="s-token" class="input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…">')}
+      ${field('s-pass', 'Lösenord för kryptering', '<input id="s-pass" class="input" type="password" autocomplete="new-password" placeholder="Minst 8 tecken">')}
+      <button class="btn" data-act="syncConnect">Koppla in</button>
+      <button class="btn secondary" data-act="closeSheet">Avbryt</button>`, 'Synk');
   }
 
   // ================================================================
@@ -1308,8 +1469,48 @@
         <p class="muted" style="margin:0;font-size:13px">Välj <b>Lägg till alla</b> i rutan som öppnas. Vill du ändra eller ta bort påminnelsen gör du det i Kalender-appen.</p>
         <button class="btn secondary" data-act="closeSheet">Stäng</button>`, 'Månatlig påminnelse');
     },
+    openSync() { syncSheet(); },
+    async syncConnect(el) {
+      const token = val('s-token').trim(), pass = val('s-pass');
+      if (!token) return toast('Klistra in GitHub-nyckeln');
+      if (pass.length < 8) return toast('Lösenordet behöver minst 8 tecken');
+      el.disabled = true; el.textContent = 'Kopplar in …';
+      try {
+        // Finns det redan synkad data och data här? Fråga vilken som ska gälla.
+        const existing = await findGist(token);
+        const hasLocal = db.transactions.length > 0 || db.goals.length > 0;
+        if (existing && hasLocal && !ui.syncChoice) {
+          ui.syncPending = { token, pass };
+          openSheet(`<h2>Det finns redan synkad data</h2>
+            <p class="muted" style="margin:0;font-size:14px">Både den här enheten och molnet har en budget. Vilken ska gälla? Den andra skrivs över.</p>
+            <button class="btn" data-act="syncChoose" data-choice="remote">Använd den synkade (rekommenderas)</button>
+            <button class="btn secondary" data-act="syncChoose" data-choice="local">Använd den här enhetens</button>
+            <button class="btn secondary" data-act="closeSheet">Avbryt</button>`, 'Välj data');
+          return;
+        }
+        const msg = await connectSync(token, pass, ui.syncChoice || 'remote');
+        ui.syncChoice = null; closeSheet(); render(); toast(msg);
+      } catch (e) {
+        ui.syncChoice = null;
+        el.disabled = false; el.textContent = 'Koppla in';
+        toast(e.message === 'auth' ? 'Nyckeln godkändes inte – kontrollera att den har Gists: Read and write' : syncErrorText(e));
+      }
+    },
+    async syncChoose(el) {
+      const p = ui.syncPending; if (!p) return closeSheet();
+      el.disabled = true; el.textContent = 'Synkar …';
+      try { const msg = await connectSync(p.token, p.pass, el.dataset.choice); ui.syncPending = null; closeSheet(); render(); toast(msg); }
+      catch (e) { el.disabled = false; toast(syncErrorText(e)); }
+    },
+    async syncNow(el) { el.disabled = true; el.textContent = 'Synkar …'; await runSync(true); syncSheet(); },
+    syncOff() {
+      confirmSheet('Stänga av synken?', 'Datan finns kvar här och i molnet, men den här enheten slutar synka. Du kan koppla in igen när som helst.', 'Stäng av', () => {
+        sync = null; saveSync(); render(); toast('Synken är avstängd på den här enheten');
+      });
+    },
     wipe() {
-      confirmSheet('Radera all data?', 'Alla transaktioner, kategorier och sparmål tas bort från den här enheten. Det går inte att ångra.', 'Radera', () => {
+      confirmSheet('Radera all data?', 'Alla transaktioner, kategorier och sparmål tas bort från den här enheten. Synken stängs av, så det som finns i molnet påverkas inte.', 'Radera', () => {
+        sync = null; saveSync();
         db = defaults(); save(); applyTheme(); location.hash = '#/oversikt'; render(); toast('All data raderad');
       });
     }
@@ -1363,7 +1564,7 @@
         const data = JSON.parse(await f.text());
         if (!data || !Array.isArray(data.transactions) || !Array.isArray(data.categories)) throw new Error('fel format');
         confirmSheet('Återställa säkerhetskopian?', 'Det som finns i appen nu ersätts med innehållet i filen.', 'Återställ', () => {
-          localStorage.setItem(KEY, JSON.stringify(data)); load(); applyTheme(); render(); toast('Säkerhetskopian är återställd');
+          localStorage.setItem(KEY, JSON.stringify(data)); load(); save(); applyTheme(); render(); toast('Säkerhetskopian är återställd');
         });
       } catch (e) { toast('Filen är ingen giltig säkerhetskopia'); }
       el.value = '';
@@ -1429,10 +1630,17 @@
   // Start
   // ================================================================
   load();
+  loadSync();
   applyTheme();
   render();
+  if (sync) runSync(false);
+  window.addEventListener('online', () => runSync(false));
   // Ny dag? Rita om när appen öppnas igen
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('#sheet-root').innerHTML) render(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    if (!$('#sheet-root').innerHTML) render();
+    runSync(false);
+  });
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     // Ladda om automatiskt när en ny version tar över (men inte vid allra första installationen)
@@ -1447,7 +1655,7 @@
     navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
       .then((reg) => {
         // Leta efter uppdatering varje gång appen kommer tillbaka i förgrunden
-        document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && reg) reg.update().catch(() => {}); });
       })
       .catch(() => {});
   }

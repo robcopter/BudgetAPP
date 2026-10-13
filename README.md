@@ -28,6 +28,14 @@ Under **Budget › Plan** fyller du i inkomst och lönedag, fasta utgifter (för
 
 Under **Inställningar › Månatlig påminnelse** väljer du dag och trycker **Lägg till i kalendern**. Då öppnas en kalenderfil (`paminnelse-XX.ics`) och iPhone frågar om du vill lägga till händelsen – välj *Lägg till alla*. Påminnelsen upprepas varje månad kl. 18.00 och ändras eller tas bort i Kalender-appen. Kalenderfilerna ska ligga i samma mapp som `index.html`.
 
+## Synk mellan mobil och dator (v1.4)
+
+1. Skapa en nyckel på GitHub: **Settings › Developer settings › Personal access tokens › Fine-grained tokens › Generate new token**. Under *Account permissions* väljer du **Gists: Read and write**. Välj en lång giltighetstid.
+2. I appen: **Inställningar › Synk mellan enheter**. Klistra in nyckeln och välj ett lösenord för krypteringen.
+3. Gör samma sak på den andra enheten med **samma nyckel och samma lösenord**.
+
+Budgeten sparas krypterad (AES-256) i en privat Gist som heter `budget-sync.json`. Utan ditt lösenord går den inte att läsa – och lösenordet kan inte återställas. Appen hämtar ändringar när den öppnas och skickar upp ändringar automatiskt. Om båda enheterna ändrats samtidigt behålls den senaste versionen.
+
 ## Backup
 
 Datan finns bara på telefonen. Använd **Inställningar › Säkerhetskopiera** då och då och spara filen i iCloud Drive. Återställ med **Återställ säkerhetskopia**.
