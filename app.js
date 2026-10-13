@@ -5,7 +5,7 @@
   // Hjälpfunktioner
   // ================================================================
   const KEY = 'budget-v1';
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
   const $ = (s, el = document) => el.querySelector(s);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-5);
@@ -647,6 +647,7 @@
       <div class="list">
         <label class="setting"><div class="txt"><b>Månaden börjar</b><span>Välj din lönedag om du budgeterar lön till lön</span></div>
           <select data-change="monthStart" aria-label="Månaden börjar">${startOpts}</select></label>
+        <button class="setting" data-act="reminder"><div class="txt"><b>Månatlig påminnelse</b><span>Lägg in en återkommande händelse i kalendern</span></div><span class="chev">${I.chev}</span></button>
       </div>
       <div class="group-title">Data</div>
       <div class="list">
@@ -979,6 +980,19 @@
     backup() {
       shareFile('budget-backup-' + todayIso() + '.json', JSON.stringify(db, null, 1), 'application/json');
     },
+    reminder() {
+      // Föreslå dagen före lönedagen (eller sista dagen i månaden om månaden börjar den 1:a)
+      const start = db.settings.monthStart || 1;
+      const def = start === 1 ? 'sista' : pad(start - 1);
+      const opts = [...Array.from({ length: 28 }, (_, i) => pad(i + 1)), 'sista']
+        .map((k) => `<option value="${k}" ${k === def ? 'selected' : ''}>${k === 'sista' ? 'Sista dagen i månaden' : 'Den ' + ordinal(Number(k))}</option>`).join('');
+      openSheet(`<h2>Månatlig påminnelse</h2>
+        <p class="muted" style="margin:0;font-size:14px">Lägger in "Planera månadens budget" i iPhones kalender, kl. 18.00 varje månad. Du får en notis från Kalender när det är dags.</p>
+        ${field('r-day', 'Vilken dag?', `<select id="r-day" class="input" data-change="reminderDay">${opts}</select>`)}
+        <a id="r-link" class="btn" href="paminnelse-${def}.ics" target="_blank" rel="noopener">Lägg till i kalendern</a>
+        <p class="muted" style="margin:0;font-size:13px">Välj <b>Lägg till alla</b> i rutan som öppnas. Vill du ändra eller ta bort påminnelsen gör du det i Kalender-appen.</p>
+        <button class="btn secondary" data-act="closeSheet">Stäng</button>`, 'Månatlig påminnelse');
+    },
     wipe() {
       confirmSheet('Radera all data?', 'Alla transaktioner, kategorier och sparmål tas bort från den här enheten. Det går inte att ångra.', 'Radera', () => {
         db = defaults(); save(); applyTheme(); location.hash = '#/oversikt'; render(); toast('All data raderad');
@@ -1016,6 +1030,7 @@
       ui.csv.items.forEach((x) => { if (!x.catId && !x.dup && normText(x.text) === key && (x.amount < 0) === (it.amount < 0)) x.catId = it.catId; });
       render();
     },
+    reminderDay(el) { $('#r-link').setAttribute('href', 'paminnelse-' + el.value + '.ics'); },
     monthStart(el) { db.settings.monthStart = Number(el.value) || 1; ui.budgetOffset = 0; save(); render(); toast('Sparat'); },
     async restore(el) {
       const f = el.files && el.files[0];

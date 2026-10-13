@@ -20,6 +20,10 @@ Personlig budgetapp: månadsbudget per kategori, daglig balans, sparmål, CSV-im
 
 Ladda upp de ändrade filerna till samma repo. Öka sedan `VERSION` i `sw.js` (t.ex. `budget-v1.0.1`) så hämtar telefonen den nya versionen nästa gång appen öppnas med internet. Din data påverkas inte.
 
+## Månatlig påminnelse
+
+Under **Inställningar › Månatlig påminnelse** väljer du dag och trycker **Lägg till i kalendern**. Då öppnas en kalenderfil (`paminnelse-XX.ics`) och iPhone frågar om du vill lägga till händelsen – välj *Lägg till alla*. Påminnelsen upprepas varje månad kl. 18.00 och ändras eller tas bort i Kalender-appen. Kalenderfilerna ska ligga i samma mapp som `index.html`.
+
 ## Backup
 
 Datan finns bara på telefonen. Använd **Inställningar › Säkerhetskopiera** då och då och spara filen i iCloud Drive. Återställ med **Återställ säkerhetskopia**.

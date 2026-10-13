@@ -131,7 +131,7 @@ h2 { margin: 0; font-size: 17px; font-weight: 600; }
 .btn {
   height: 54px; border-radius: 18px; border: none; width: 100%;
   background: var(--btn); color: var(--on-btn); font-size: 16px; font-weight: 600;
-  display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0; text-decoration: none;
 }
 .btn.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 500; }
 .btn.danger { background: transparent; color: var(--over); border: 1px solid var(--line); font-weight: 500; }
